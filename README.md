@@ -79,16 +79,24 @@ apps rollback <app>         # повернутися на попередній
    ```
    Залежності беруться з `requirements.txt`, якщо він є.
 2. Скопіювати `templates/deploy.yml` у `.github/workflows/deploy.yml`.
-3. У налаштуваннях репозиторію задати змінну `DEPLOY_SSH_PORT`: SSH-порт потрібного контейнера.
-4. Секрети (`.env`) один раз внести вручну через `apps env <app>`.
+3. У налаштуваннях **репозиторію застосунку** (Settings → Secrets and variables → Actions) задати:
 
-Секрети й змінні на рівні **організації** (налаштувати один раз):
+   | Назва | Тип | Що це |
+   |---|---|---|
+   | `DEPLOY_SSH_KEY` | secret | приватний ключ CI (публічна половина — `keys/github-actions.pub`) |
+   | `DEPLOY_KNOWN_HOSTS` | secret | вивід `ssh-keyscan -p <SSH_PORT> <сервер>` |
+   | `DEPLOY_HOST` | variable | адреса сервера |
+   | `DEPLOY_SSH_PORT` | variable | SSH-порт потрібного контейнера |
 
-| Назва | Тип | Що це |
-|---|---|---|
-| `DEPLOY_SSH_KEY` | secret | приватний ключ CI (публічна половина — `keys/github-actions.pub`) |
-| `DEPLOY_KNOWN_HOSTS` | secret | вивід `ssh-keyscan -p <порт> <сервер>` для всіх трьох SSH-портів |
-| `DEPLOY_HOST` | variable | адреса сервера |
+   Через `gh`:
+   ```bash
+   R=IASAStudentCouncil/<репо>
+   gh secret set DEPLOY_SSH_KEY --repo $R < ~/.ssh/iasa-github-actions
+   ssh-keyscan -p <SSH_PORT> <сервер> | gh secret set DEPLOY_KNOWN_HOSTS --repo $R
+   gh variable set DEPLOY_HOST --repo $R --body "<сервер>"
+   gh variable set DEPLOY_SSH_PORT --repo $R --body "<SSH_PORT>"
+   ```
+   На рівні організації їх не задавати: на безкоштовному плані GitHub секрети й змінні організації не доходять до приватних репо. Поки `DEPLOY_HOST` не задано, job деплою пропускається.
 
 ### Що робить `deploy-app`
 

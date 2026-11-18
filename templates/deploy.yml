@@ -1,11 +1,12 @@
 # Шаблон CI/CD для репозиторію застосунку (сайт, бот).
 # Скопіюйте у .github/workflows/deploy.yml свого репозиторію і додайте deploy/app.conf.
 #
-# Налаштування (Settings → Secrets and variables → Actions):
-#   секрети організації:  DEPLOY_SSH_KEY      — приватний ключ github-actions (публічний — в iasa-infra/keys)
-#                         DEPLOY_KNOWN_HOSTS  — рядки `ssh-keyscan -p <порт> <хост>` для всіх трьох контейнерів
-#   змінні організації:   DEPLOY_HOST         — адреса сервера
-#   змінні репозиторію:   DEPLOY_SSH_PORT     — SSH-порт свого контейнера (champ / portal / bots)
+# Налаштування — на рівні РЕПОЗИТОРІЮ (Settings → Secrets and variables → Actions).
+# Секрети й змінні організації на безкоштовному плані не доходять до приватних репо.
+#   секрети:  DEPLOY_SSH_KEY      — приватний ключ github-actions (публічний — в iasa-infra/keys)
+#             DEPLOY_KNOWN_HOSTS  — вивід `ssh-keyscan -p <порт> <хост>` для свого контейнера
+#   змінні:   DEPLOY_HOST         — адреса сервера
+#             DEPLOY_SSH_PORT     — SSH-порт свого контейнера (champ / portal / bots)
 #                         APP_NAME            — назва застосунку в контейнері (необов'язково, за замовчуванням — назва репо)
 name: Deploy
 
@@ -23,6 +24,8 @@ permissions:
 
 jobs:
   deploy:
+    # поки сервер не налаштований (немає DEPLOY_HOST), деплой пропускається, а не падає
+    if: vars.DEPLOY_HOST != ''
     runs-on: ubuntu-latest
     environment: production
     steps:
