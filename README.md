@@ -79,7 +79,14 @@ apps rollback <app>         # повернутися на попередній
    ```
    Залежності беруться з `requirements.txt`, якщо він є.
 2. Скопіювати `templates/deploy.yml` у `.github/workflows/deploy.yml`.
-3. У налаштуваннях **репозиторію застосунку** (Settings → Secrets and variables → Actions) задати:
+3. Девопс підключає репо однією командою (секрети й змінні з його локального `~/.config/iasa-deploy.env`, зразок — `scripts/deploy.env.example`):
+   ```bash
+   scripts/connect-repo.sh <репо> <champ|portal|bots>
+   ```
+   Скрипт можна запускати повторно: наприклад, коли зʼявиться адреса сервера.
+   Для нових ботів є шаблон [bot-template](https://github.com/IASAStudentCouncil/bot-template).
+
+   Що саме він задає в **репозиторії застосунку** (Settings → Secrets and variables → Actions):
 
    | Назва | Тип | Що це |
    |---|---|---|
@@ -88,7 +95,7 @@ apps rollback <app>         # повернутися на попередній
    | `DEPLOY_HOST` | variable | адреса сервера |
    | `DEPLOY_SSH_PORT` | variable | SSH-порт потрібного контейнера |
 
-   Через `gh`:
+   Вручну через `gh`:
    ```bash
    R=IASAStudentCouncil/<репо>
    gh secret set DEPLOY_SSH_KEY --repo $R < ~/.ssh/iasa-github-actions
