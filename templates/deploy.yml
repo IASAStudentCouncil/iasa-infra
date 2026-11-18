@@ -74,6 +74,7 @@ jobs:
           URL: ${{ vars.PUBLIC_URL }}
         run: |
           [ -n "$TOKEN" ] && [ -n "$CHAT" ] || { echo "Telegram не налаштовано (TG_BOT_TOKEN / TG_CHAT_ID) — пропускаю"; exit 0; }
+          [ -n "$MSG" ] || MSG="ручний запуск"
           esc() { sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g'; }
           if [ "$DEPLOY" = success ]; then icon="🟩"; status="задеплоєно"
           elif [ "$DEPLOY" = skipped ] && [ "$CHECK" = success ]; then icon="🟦"; status="перевірено, без деплою"
