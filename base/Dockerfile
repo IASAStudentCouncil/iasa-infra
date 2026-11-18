@@ -1,7 +1,7 @@
 # Базовий "контейнер-сервер" Студради ІПСА.
 # Усередині: SSH (тільки за ключем), Python 3.12, git, supervisor і скрипт deploy-app,
 # через який GitHub Actions деплоїть застосунки.
-FROM python:3.12-slim-bookworm
+FROM python:3.15-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
