@@ -139,7 +139,7 @@ switch_venv() { ln -sfn "$1" "$BASE/.venv-new" && mv -Tf "$BASE/.venv-new" "$BAS
 # venv зі старих версій deploy-app був звичайною текою, а не симлінком
 if [ -d "$BASE/venv" ] && [ ! -L "$BASE/venv" ]; then rm -rf "$BASE/venv"; fi
 restart_app() {
-    "${SCTL[@]}" reread >/dev/null
+    "${SCTL[@]}" reread >/dev/null || die "supervisor застосунків недоступний — перезапустіть контейнер (docker compose restart <назва>)"
     "${SCTL[@]}" update >/dev/null
     "${SCTL[@]}" restart "$APP" >/dev/null 2>&1 || "${SCTL[@]}" start "$APP" >/dev/null 2>&1 || true
 }
