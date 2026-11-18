@@ -1,0 +1,40 @@
+# Моніторинг доступності сайтів зі списку monitoring/targets.txt.
+# Коли сайт лягає — issue з міткою "outage" + 🔴 у Telegram; коли піднімається — issue закривається + 🟢.
+# Secrets (ті самі, що для сповіщень CI): TG_BOT_TOKEN, TG_CHAT_ID, TG_THREAD_ID (необов'язково);
+# TG_ALERT_THREAD_ID — окрема гілка форуму для алертів (необов'язково, інакше TG_THREAD_ID).
+#
+# GitHub може запускати scheduled-workflow із затримкою в кілька хвилин, а в публічних репо
+# вимикає їх після 60 днів без жодних комітів — тоді треба увімкнути вручну у вкладці Actions.
+name: monitor
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: monitoring
+
+      - name: check sites
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+          TG_ALERT_THREAD_ID: ${{ secrets.TG_ALERT_THREAD_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash monitoring/check.sh
