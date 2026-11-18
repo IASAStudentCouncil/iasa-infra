@@ -23,7 +23,7 @@ jobs:
       - name: Start container
         run: |
           ssh-keygen -q -t ed25519 -N "" -f ci_key
-          docker run -d --name t -p 2222:22 -p 8000:8000 \
+          docker run -d --name iasa-test -p 2222:22 -p 8000:8000 \
             -e CONTAINER_NAME=ci -e AUTHORIZED_KEYS="$(cat ci_key.pub)" iasa-base:test
           for i in $(seq 1 20); do ssh-keyscan -p 2222 127.0.0.1 >/dev/null 2>&1 && break; sleep 1; done
 
@@ -42,8 +42,8 @@ jobs:
           EOF
           git -c user.email=ci@x -c user.name=ci add -A
           git -c user.email=ci@x -c user.name=ci commit -qm sample
-          docker cp . t:/tmp/sample
-          docker exec t chown -R deploy:deploy /tmp/sample
+          docker cp . iasa-test:/tmp/sample
+          docker exec iasa-test chown -R deploy:deploy /tmp/sample
           cd ..
           SSH="ssh -i ci_key -p 2222 -o StrictHostKeyChecking=no deploy@127.0.0.1"
           $SSH deploy-app sample file:///tmp/sample main < /dev/null
@@ -56,8 +56,8 @@ jobs:
       - name: Root login and passwords are disabled
         run: |
           ! ssh -i ci_key -p 2222 -o StrictHostKeyChecking=no -o BatchMode=yes root@127.0.0.1 true
-          docker exec t sshd -T | grep -E '^(passwordauthentication|permitrootlogin) no$' | wc -l | grep -q 2
+          docker exec iasa-test sshd -T | grep -E '^(passwordauthentication|permitrootlogin) no$' | wc -l | grep -q 2
 
       - name: Logs on failure
         if: failure()
-        run: docker logs t; docker exec t cat /home/deploy/logs/sample.log || true
+        run: docker logs iasa-test || true; docker exec iasa-test cat /home/deploy/logs/sample.log || true
