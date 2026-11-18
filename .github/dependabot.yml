@@ -8,3 +8,7 @@ updates:
   - package-ecosystem: docker
     directory: /base
     schedule: { interval: weekly, day: monday }
+    # лише патчі в межах поточної версії Python (3.12.x); перехід на нову версію — свідомо, вручну
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

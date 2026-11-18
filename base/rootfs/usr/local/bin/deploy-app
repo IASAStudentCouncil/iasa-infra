@@ -5,7 +5,7 @@
 #   1. забирає <ref> (коміт або гілку) з <git-url> у новий реліз apps/<app>/releases/<час>-<sha>;
 #   2. шляхи з PERSIST (дані, конфіги) переносить у apps/<app>/shared і підставляє симлінками,
 #      тож деплой їх не перетирає;
-#   3. ставить залежності з requirements.txt у apps/<app>/venv (тільки якщо файл змінився);
+#   3. ставить залежності з requirements.txt у apps/<app>/venv-<версія Python> (тільки якщо файл змінився);
 #   4. перемикає apps/<app>/current на новий реліз і перезапускає програму в supervisor;
 #   5. перевіряє, що застосунок живий; якщо ні — повертає попередній реліз і виходить з помилкою.
 #
@@ -84,17 +84,22 @@ touch "$BASE/shared/.env"
 chmod 600 "$BASE/shared/.env"
 
 # --- 3. залежності --------------------------------------------------------
-VENV=$BASE/venv
-if [ ! -x "$VENV/bin/python" ]; then
-    log "створюю venv"
-    python3 -m venv "$VENV"
+# Окремий venv на кожну версію Python (venv-3.12, venv-3.13, ...), а apps/<app>/venv —
+# симлінк на поточний. Після оновлення Python в образі новий venv збирається поруч,
+# старий застосунок працює далі, а перемикання відбувається разом із релізом.
+PYVER=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+VENV_DIR=$BASE/venv-$PYVER
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    log "створюю venv (Python $PYVER)"
+    rm -rf "$VENV_DIR"
+    python3 -m venv "$VENV_DIR"
 fi
 if [ -f "$REL/requirements.txt" ]; then
     NEW_HASH=$(sha256sum "$REL/requirements.txt" | cut -d' ' -f1)
-    if [ "$NEW_HASH" != "$(cat "$BASE/.requirements.sha256" 2>/dev/null || true)" ]; then
+    if [ "$NEW_HASH" != "$(cat "$VENV_DIR/.requirements.sha256" 2>/dev/null || true)" ]; then
         log "встановлюю залежності"
-        "$VENV/bin/pip" install -q -r "$REL/requirements.txt"
-        echo "$NEW_HASH" > "$BASE/.requirements.sha256"
+        "$VENV_DIR/bin/pip" install -q -r "$REL/requirements.txt"
+        echo "$NEW_HASH" > "$VENV_DIR/.requirements.sha256"
     else
         log "залежності без змін"
     fi
@@ -105,7 +110,7 @@ if [ -n "$SETUP" ]; then
     (
         cd "$REL"
         set -a; . "$BASE/shared/.env"; set +a
-        export PORT APP_NAME=$APP PATH="$VENV/bin:$PATH" VIRTUAL_ENV=$VENV
+        export PORT APP_NAME=$APP PATH="$VENV_DIR/bin:$PATH" VIRTUAL_ENV=$VENV_DIR
         bash -c "$SETUP"
     ) || die "SETUP завершився з помилкою, реліз не активовано"
 fi
@@ -128,12 +133,17 @@ redirect_stderr=true
 EOF
 
 PREV=$(readlink "$BASE/current" 2>/dev/null || true)
+PREV_VENV=$(readlink "$BASE/venv" 2>/dev/null || true)
 switch_to() { ln -sfn "$1" "$BASE/.current-new" && mv -Tf "$BASE/.current-new" "$BASE/current"; }
+switch_venv() { ln -sfn "$1" "$BASE/.venv-new" && mv -Tf "$BASE/.venv-new" "$BASE/venv"; }
+# venv зі старих версій deploy-app був звичайною текою, а не симлінком
+if [ -d "$BASE/venv" ] && [ ! -L "$BASE/venv" ]; then rm -rf "$BASE/venv"; fi
 restart_app() {
     "${SCTL[@]}" reread >/dev/null
     "${SCTL[@]}" update >/dev/null
     "${SCTL[@]}" restart "$APP" >/dev/null 2>&1 || "${SCTL[@]}" start "$APP" >/dev/null 2>&1 || true
 }
+switch_venv "$VENV_DIR"
 switch_to "$REL"
 restart_app
 
@@ -143,7 +153,7 @@ healthy() {
     if [ -n "$HEALTHCHECK_URL" ]; then
         url=$(PORT=$PORT bash -c "echo \"$HEALTHCHECK_URL\"")
         for _ in $(seq 1 30); do
-            curl -fsS -o /dev/null --max-time 3 "$url" && return 0
+            curl -fs -o /dev/null --max-time 3 "$url" && return 0
             sleep 1
         done
         return 1
@@ -159,13 +169,17 @@ else
     tail -n 30 "$HOME/logs/$APP.log" 2>/dev/null || true
     if [ -n "$PREV" ] && [ -d "$PREV" ]; then
         log "повертаю попередній реліз $(basename "$PREV")"
+        [ -n "$PREV_VENV" ] && [ -d "$PREV_VENV" ] && switch_venv "$PREV_VENV"
         switch_to "$PREV"
         restart_app
     fi
     die "деплой $APP не вдався"
 fi
 
-# --- 6. прибирання старих релізів ----------------------------------------
+# --- 6. прибирання старих релізів і venv інших версій Python -------------
+for v in "$BASE"/venv-*; do
+    [ -d "$v" ] && [ "$v" != "$VENV_DIR" ] && rm -rf -- "$v"
+done
 cd "$BASE/releases"
 ls -1d */ 2>/dev/null | sed 's|/$||' | sort -r | tail -n +$((KEEP_RELEASES + 1)) | while read -r old; do
     [ "$BASE/releases/$old" = "$(readlink "$BASE/current")" ] || rm -rf -- "$BASE/releases/$old"
