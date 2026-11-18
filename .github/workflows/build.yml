@@ -1,0 +1,63 @@
+# Перевірка образу: збирає його, піднімає контейнер, заходить по SSH,
+# деплоїть тестовий застосунок через deploy-app і перевіряє, що він відповідає.
+name: Build & test base image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build -f base/Dockerfile -t iasa-base:test .
+
+      - name: Start container
+        run: |
+          ssh-keygen -q -t ed25519 -N "" -f ci_key
+          docker run -d --name t -p 2222:22 -p 8000:8000 \
+            -e CONTAINER_NAME=ci -e AUTHORIZED_KEYS="$(cat ci_key.pub)" iasa-base:test
+          for i in $(seq 1 20); do ssh-keyscan -p 2222 127.0.0.1 >/dev/null 2>&1 && break; sleep 1; done
+
+      - name: Deploy sample app over SSH
+        run: |
+          mkdir sample && cd sample
+          git init -q -b main
+          mkdir deploy
+          printf 'fastapi\nuvicorn\n' > requirements.txt
+          printf 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/health")\ndef h():\n    return {"ok": True}\n' > main.py
+          cat > deploy/app.conf <<'EOF'
+          START='uvicorn main:app --host 0.0.0.0 --port $PORT'
+          PORT=8000
+          PERSIST="data"
+          HEALTHCHECK_URL='http://127.0.0.1:$PORT/health'
+          EOF
+          git -c user.email=ci@x -c user.name=ci add -A
+          git -c user.email=ci@x -c user.name=ci commit -qm sample
+          docker cp . t:/tmp/sample
+          docker exec t chown -R deploy:deploy /tmp/sample
+          cd ..
+          SSH="ssh -i ci_key -p 2222 -o StrictHostKeyChecking=no deploy@127.0.0.1"
+          $SSH deploy-app sample file:///tmp/sample main < /dev/null
+          curl -fsS http://127.0.0.1:8000/health
+          $SSH apps status
+          # повторний деплой не повинен ламати застосунок
+          $SSH deploy-app sample file:///tmp/sample main < /dev/null
+          $SSH apps releases sample
+
+      - name: Root login and passwords are disabled
+        run: |
+          ! ssh -i ci_key -p 2222 -o StrictHostKeyChecking=no -o BatchMode=yes root@127.0.0.1 true
+          docker exec t sshd -T | grep -E '^(passwordauthentication|permitrootlogin) no$' | wc -l | grep -q 2
+
+      - name: Logs on failure
+        if: failure()
+        run: docker logs t; docker exec t cat /home/deploy/logs/sample.log || true

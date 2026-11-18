@@ -1,0 +1,50 @@
+# Шаблон CI/CD для репозиторію застосунку (сайт, бот).
+# Скопіюйте у .github/workflows/deploy.yml свого репозиторію і додайте deploy/app.conf.
+#
+# Налаштування (Settings → Secrets and variables → Actions):
+#   секрети організації:  DEPLOY_SSH_KEY      — приватний ключ github-actions (публічний — в iasa-infra/keys)
+#                         DEPLOY_KNOWN_HOSTS  — рядки `ssh-keyscan -p <порт> <хост>` для всіх трьох контейнерів
+#   змінні організації:   DEPLOY_HOST         — адреса сервера
+#   змінні репозиторію:   DEPLOY_SSH_PORT     — SSH-порт свого контейнера (champ / portal / bots)
+#                         APP_NAME            — назва застосунку в контейнері (необов'язково, за замовчуванням — назва репо)
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HOST: ${{ vars.DEPLOY_HOST }}
+          PORT: ${{ vars.DEPLOY_SSH_PORT }}
+          APP: ${{ vars.APP_NAME || github.event.repository.name }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APP=$(echo "$APP" | tr '[:upper:]' '[:lower:]')
+          # токен іде через stdin, щоб працювало і для приватних репозиторіїв
+          echo "$TOKEN" | ssh -i ~/.ssh/id_deploy -p "$PORT" \
+            -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+            "deploy@$HOST" deploy-app "$APP" "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"

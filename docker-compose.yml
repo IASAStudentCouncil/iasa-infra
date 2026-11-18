@@ -1,0 +1,74 @@
+# Три контейнери-сервери Студради ІПСА. Усі збираються з одного образу (base/Dockerfile),
+# відрізняються тільки портами і томами. Номери зовнішніх портів призначає адміністратор
+# сервера — вони задаються в .env (див. .env.example).
+#
+# Запуск на сервері:  docker compose up -d --build
+x-base: &base
+  build:
+    context: .
+    dockerfile: base/Dockerfile
+  image: iasa-base:latest
+  restart: unless-stopped
+  environment: &env
+    TZ: Europe/Kyiv
+    AUTHORIZED_KEYS: ${EXTRA_AUTHORIZED_KEYS:-}
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  # 1. Сайт + бот хакатону (champ.iasa.kpi.ua). Тимчасовий: між хакатонами можна зупиняти.
+  champ:
+    <<: *base
+    container_name: iasa-champ
+    hostname: champ
+    environment:
+      <<: *env
+      CONTAINER_NAME: champ
+    ports:
+      - "${CHAMP_SSH_PORT}:22"
+      - "${CHAMP_BIND:-127.0.0.1}:${CHAMP_HTTP_PORT}:8000"    # сайт
+      - "${CHAMP_BIND:-127.0.0.1}:${CHAMP_HOOK_PORT}:8001"    # вебхук бота
+    volumes:
+      - champ-home:/home/deploy
+      - champ-hostkeys:/etc/ssh/host_keys
+
+  # 2. Портал Студради + бот верифікації. Основний, працює постійно.
+  portal:
+    <<: *base
+    container_name: iasa-portal
+    hostname: portal
+    environment:
+      <<: *env
+      CONTAINER_NAME: portal
+    ports:
+      - "${PORTAL_SSH_PORT}:22"
+      - "${PORTAL_BIND:-127.0.0.1}:${PORTAL_HTTP_PORT}:8000"  # портал
+      - "${PORTAL_BIND:-127.0.0.1}:${PORTAL_HOOK_PORT}:8001"  # вебхук бота верифікації
+    volumes:
+      - portal-home:/home/deploy
+      - portal-hostkeys:/etc/ssh/host_keys
+
+  # 3. Периферійні боти (мерч, КЯО, ...). Кожен бот — окремий застосунок зі свого репозиторію.
+  #    Ботам на polling порти не потрібні; під вебхуки зарезервовано 8000-8003.
+  bots:
+    <<: *base
+    container_name: iasa-bots
+    hostname: bots
+    environment:
+      <<: *env
+      CONTAINER_NAME: bots
+    ports:
+      - "${BOTS_SSH_PORT}:22"
+      - "${BOTS_BIND:-127.0.0.1}:${BOTS_HOOK_PORTS}:8000-8003"
+    volumes:
+      - bots-home:/home/deploy
+      - bots-hostkeys:/etc/ssh/host_keys
+
+volumes:
+  champ-home:
+  champ-hostkeys:
+  portal-home:
+  portal-hostkeys:
+  bots-home:
+  bots-hostkeys:

@@ -1,0 +1,19 @@
+#!/bin/bash
+# run-app <app> — запуск застосунку з supervisor: читає deploy/app.conf, потім shared/.env
+# (значення з .env мають пріоритет), і виконує START у venv застосунку.
+set -euo pipefail
+APP=$1
+BASE=/home/deploy/apps/$APP
+cd "$BASE/current"
+
+START="" PORT=""
+# shellcheck disable=SC1091
+. deploy/app.conf
+set -a
+# shellcheck disable=SC1091
+. "$BASE/shared/.env"
+set +a
+
+export PORT=${PORT:-8000} APP_NAME=$APP
+export VIRTUAL_ENV=$BASE/venv PATH="$BASE/venv/bin:$PATH"
+exec bash -c "exec $START"

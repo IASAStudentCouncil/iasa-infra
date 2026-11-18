@@ -1,0 +1,172 @@
+#!/bin/bash
+# deploy-app <app> <git-url> <ref>
+#
+# Деплоїть один застосунок у цей контейнер:
+#   1. забирає <ref> (коміт або гілку) з <git-url> у новий реліз apps/<app>/releases/<час>-<sha>;
+#   2. шляхи з PERSIST (дані, конфіги) переносить у apps/<app>/shared і підставляє симлінками,
+#      тож деплой їх не перетирає;
+#   3. ставить залежності з requirements.txt у apps/<app>/venv (тільки якщо файл змінився);
+#   4. перемикає apps/<app>/current на новий реліз і перезапускає програму в supervisor;
+#   5. перевіряє, що застосунок живий; якщо ні — повертає попередній реліз і виходить з помилкою.
+#
+# Токен для приватних репозиторіїв можна передати першим рядком stdin
+# (так він не потрапляє ні в аргументи процесу, ні в .git/config).
+#
+# Налаштування застосунку — файл deploy/app.conf у його репозиторії:
+#   START='uvicorn main:app --host 0.0.0.0 --port $PORT'   # обов'язково, в одинарних лапках
+#   PORT=8000                                               # порт усередині контейнера (8000-8009)
+#   PERSIST="data config"                                   # що зберігати між деплоями
+#   HEALTHCHECK_URL='http://127.0.0.1:$PORT/api/health'     # необов'язково
+#   SETUP='python manage.py migrate'                        # необов'язково, після pip install
+set -euo pipefail
+
+KEEP_RELEASES=5
+APPS_ROOT=/home/deploy/apps
+SCTL=(supervisorctl -c /etc/supervisor/apps.conf)
+
+log() { printf '[deploy-app] %s\n' "$*"; }
+die() { printf '[deploy-app] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -un)" = deploy ] || die "запускати від користувача deploy"
+[ $# -eq 3 ] || die "використання: deploy-app <app> <git-url> <ref>"
+APP=$1 URL=$2 REF=$3
+[[ $APP =~ ^[a-z0-9][a-z0-9_-]{0,40}$ ]] || die "некоректна назва застосунку: $APP"
+[[ $REF =~ ^[A-Za-z0-9._/-]+$ ]] || die "некоректний ref: $REF"
+
+TOKEN=""
+if [ ! -t 0 ]; then IFS= read -r TOKEN || true; fi
+GIT_AUTH=()
+if [ -n "$TOKEN" ]; then
+    GIT_AUTH=(-c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)")
+fi
+
+BASE=$APPS_ROOT/$APP
+mkdir -p "$BASE/releases" "$BASE/shared"
+
+# один деплой застосунку за раз
+exec 9>"$BASE/.lock"
+flock -w 600 9 || die "інший деплой $APP триває понад 10 хв"
+
+# --- 1. код ---------------------------------------------------------------
+TMP=$BASE/releases/.tmp-$$
+trap 'rm -rf "$TMP" "$BASE/.current-new"' EXIT
+git init -q "$TMP"
+git -C "$TMP" "${GIT_AUTH[@]}" fetch -q --depth 1 "$URL" "$REF" || die "не вдалося забрати $REF з $URL"
+git -C "$TMP" checkout -q --detach FETCH_HEAD
+SHA=$(git -C "$TMP" rev-parse HEAD)
+REL=$BASE/releases/$(date +%Y%m%d-%H%M%S)-${SHA:0:10}
+mv "$TMP" "$REL"
+log "$APP: реліз ${SHA:0:10} -> $REL"
+
+CONF=$REL/deploy/app.conf
+[ -f "$CONF" ] || die "у репозиторії немає deploy/app.conf"
+START="" PORT="" PERSIST="" HEALTHCHECK_URL="" SETUP=""
+# shellcheck disable=SC1090
+. "$CONF"
+[ -n "$START" ] || die "deploy/app.conf: START порожній"
+PORT=${PORT:-8000}
+[[ $PORT =~ ^[0-9]+$ ]] || die "deploy/app.conf: PORT має бути числом"
+
+# --- 2. постійні дані -----------------------------------------------------
+for p in $PERSIST; do
+    [[ $p != /* && $p != *..* ]] || die "PERSIST: шлях '$p' має бути відносним і без .."
+    src=$REL/$p dst=$BASE/shared/$p
+    if [ ! -e "$dst" ]; then
+        mkdir -p "$(dirname "$dst")"
+        if [ -e "$src" ]; then cp -a "$src" "$dst"; log "  $p: перший деплой, взято з репозиторію"
+        else mkdir -p "$dst"; log "  $p: створено порожнім"; fi
+    fi
+    rm -rf "$src"
+    mkdir -p "$(dirname "$src")"
+    ln -s "$dst" "$src"
+done
+touch "$BASE/shared/.env"
+chmod 600 "$BASE/shared/.env"
+
+# --- 3. залежності --------------------------------------------------------
+VENV=$BASE/venv
+if [ ! -x "$VENV/bin/python" ]; then
+    log "створюю venv"
+    python3 -m venv "$VENV"
+fi
+if [ -f "$REL/requirements.txt" ]; then
+    NEW_HASH=$(sha256sum "$REL/requirements.txt" | cut -d' ' -f1)
+    if [ "$NEW_HASH" != "$(cat "$BASE/.requirements.sha256" 2>/dev/null || true)" ]; then
+        log "встановлюю залежності"
+        "$VENV/bin/pip" install -q -r "$REL/requirements.txt"
+        echo "$NEW_HASH" > "$BASE/.requirements.sha256"
+    else
+        log "залежності без змін"
+    fi
+fi
+
+if [ -n "$SETUP" ]; then
+    log "SETUP: $SETUP"
+    (
+        cd "$REL"
+        set -a; . "$BASE/shared/.env"; set +a
+        export PORT APP_NAME=$APP PATH="$VENV/bin:$PATH" VIRTUAL_ENV=$VENV
+        bash -c "$SETUP"
+    ) || die "SETUP завершився з помилкою, реліз не активовано"
+fi
+
+# --- 4. перемикання й перезапуск -----------------------------------------
+cat > "$HOME/supervisor/$APP.conf" <<EOF
+[program:$APP]
+command=/usr/local/bin/run-app $APP
+directory=$BASE/current
+autostart=true
+autorestart=true
+startsecs=3
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=15
+stdout_logfile=$HOME/logs/$APP.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+redirect_stderr=true
+EOF
+
+PREV=$(readlink "$BASE/current" 2>/dev/null || true)
+switch_to() { ln -sfn "$1" "$BASE/.current-new" && mv -Tf "$BASE/.current-new" "$BASE/current"; }
+restart_app() {
+    "${SCTL[@]}" reread >/dev/null
+    "${SCTL[@]}" update >/dev/null
+    "${SCTL[@]}" restart "$APP" >/dev/null 2>&1 || "${SCTL[@]}" start "$APP" >/dev/null 2>&1 || true
+}
+switch_to "$REL"
+restart_app
+
+# --- 5. перевірка ---------------------------------------------------------
+healthy() {
+    local url
+    if [ -n "$HEALTHCHECK_URL" ]; then
+        url=$(PORT=$PORT bash -c "echo \"$HEALTHCHECK_URL\"")
+        for _ in $(seq 1 30); do
+            curl -fsS -o /dev/null --max-time 3 "$url" && return 0
+            sleep 1
+        done
+        return 1
+    fi
+    sleep 5
+    "${SCTL[@]}" status "$APP" | grep -q RUNNING
+}
+
+if healthy; then
+    log "$APP працює (${SHA:0:10})"
+else
+    log "$APP не відповідає після деплою. Останні рядки логу:"
+    tail -n 30 "$HOME/logs/$APP.log" 2>/dev/null || true
+    if [ -n "$PREV" ] && [ -d "$PREV" ]; then
+        log "повертаю попередній реліз $(basename "$PREV")"
+        switch_to "$PREV"
+        restart_app
+    fi
+    die "деплой $APP не вдався"
+fi
+
+# --- 6. прибирання старих релізів ----------------------------------------
+cd "$BASE/releases"
+ls -1d */ 2>/dev/null | sed 's|/$||' | sort -r | tail -n +$((KEEP_RELEASES + 1)) | while read -r old; do
+    [ "$BASE/releases/$old" = "$(readlink "$BASE/current")" ] || rm -rf -- "$BASE/releases/$old"
+done

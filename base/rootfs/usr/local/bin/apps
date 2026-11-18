@@ -1,0 +1,42 @@
+#!/bin/bash
+# apps — керування застосунками в контейнері вручну.
+#   apps                     статус усіх застосунків
+#   apps logs <app> [-f]     лог застосунку
+#   apps restart|stop|start <app>
+#   apps env <app>           відкрити shared/.env у nano (секрети, токени ботів) і перезапустити
+#   apps releases <app>      список релізів, * — поточний
+#   apps rollback <app>      повернутися на попередній реліз
+set -euo pipefail
+SCTL=(supervisorctl -c /etc/supervisor/apps.conf)
+APPS_ROOT=/home/deploy/apps
+
+need_app() { [ -n "${1:-}" ] && [ -d "$APPS_ROOT/$1" ] || { echo "немає застосунку '${1:-}'" >&2; exit 1; }; }
+
+cmd=${1:-status}; app=${2:-}
+case $cmd in
+    status) "${SCTL[@]}" status || true ;;
+    logs)
+        need_app "$app"
+        if [ "${3:-}" = -f ]; then tail -n 100 -f "$HOME/logs/$app.log"; else tail -n 200 "$HOME/logs/$app.log"; fi ;;
+    restart|stop|start) need_app "$app"; "${SCTL[@]}" "$cmd" "$app" ;;
+    env)
+        need_app "$app"
+        ${EDITOR:-nano} "$APPS_ROOT/$app/shared/.env"
+        "${SCTL[@]}" restart "$app" ;;
+    releases)
+        need_app "$app"
+        cur=$(basename "$(readlink "$APPS_ROOT/$app/current")")
+        for r in $(ls -1 "$APPS_ROOT/$app/releases" | sort -r); do
+            [ "$r" = "$cur" ] && echo "* $r" || echo "  $r"
+        done ;;
+    rollback)
+        need_app "$app"
+        cur=$(basename "$(readlink "$APPS_ROOT/$app/current")")
+        prev=$(ls -1 "$APPS_ROOT/$app/releases" | sort -r | awk -v c="$cur" 'f{print; exit} $0==c{f=1}')
+        [ -n "$prev" ] || { echo "немає попереднього релізу" >&2; exit 1; }
+        ln -sfn "$APPS_ROOT/$app/releases/$prev" "$APPS_ROOT/$app/.current-new"
+        mv -Tf "$APPS_ROOT/$app/.current-new" "$APPS_ROOT/$app/current"
+        "${SCTL[@]}" restart "$app"
+        echo "$app: $cur -> $prev" ;;
+    *) sed -n '2,9p' "$0"; exit 1 ;;
+esac
