@@ -1,3 +1,4 @@
+# Telegram-сповіщення (необов'язково): secrets TG_BOT_TOKEN, TG_CHAT_ID, TG_THREAD_ID.
 # Перевірка образу: збирає його, піднімає контейнер, заходить по SSH,
 # деплоїть тестовий застосунок через deploy-app і перевіряє, що він відповідає.
 name: Build & test base image
@@ -61,3 +62,42 @@ jobs:
       - name: Logs on failure
         if: failure()
         run: docker logs iasa-test || true; docker exec iasa-test cat /home/deploy/logs/sample.log || true
+
+  notify:
+    name: telegram
+    needs: [test]
+    if: always() && github.event_name != 'pull_request' && needs.test.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: send
+        env:
+          TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT: ${{ secrets.TG_CHAT_ID }}
+          THREAD: ${{ secrets.TG_THREAD_ID }}
+          CHECK: ${{ needs.test.result }}
+          DEPLOY: ${{ 'skipped' }}
+          REPO: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          MSG: ${{ github.event.head_commit.message }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          URL: ${{ vars.PUBLIC_URL }}
+        run: |
+          [ -n "$TOKEN" ] && [ -n "$CHAT" ] || { echo "Telegram не налаштовано (TG_BOT_TOKEN / TG_CHAT_ID) — пропускаю"; exit 0; }
+          esc() { sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g'; }
+          if [ "$DEPLOY" = success ]; then icon="🟩"; status="задеплоєно"
+          elif [ "$DEPLOY" = skipped ] && [ "$CHECK" = success ]; then icon="🟦"; status="перевірено, без деплою"
+          else icon="🟥"; status="впало (check: $CHECK, deploy: $DEPLOY)"; fi
+          text="$icon <b>$REPO</b> · $BRANCH — $status
+          👤 $ACTOR
+          💬 $(printf '%s' "$MSG" | head -n1 | esc)
+          🔗 <a href=\"$RUN\">run</a>${URL:+ · <a href=\"$URL\">сайт</a>}"
+          # прибрати відступ YAML з рядків повідомлення
+          text=$(printf '%s\n' "$text" | sed 's/^ *//')
+          args=()
+          [ -n "$THREAD" ] && args+=(-d message_thread_id="$THREAD")
+          resp=$(curl -sS -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            -d chat_id="$CHAT" -d parse_mode=HTML -d disable_web_page_preview=true \
+            "${args[@]}" --data-urlencode text="$text") || resp="curl failed"
+          # Telegram відповідає помилкою в JSON (напр. хибний chat/thread id) — показуємо її як warning, а не валимо run
+          if echo "$resp" | grep -q '"ok":true'; then echo "telegram: надіслано"; else echo "::warning::Telegram: $resp"; fi
